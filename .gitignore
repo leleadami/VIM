@@ -24,6 +24,8 @@ generate_figures.py
 .claude/
 comandi.md
 report.tex
+prompt.txt
+CLAUDE.md
 
 # Cache e file di sistema
 __pycache__/
