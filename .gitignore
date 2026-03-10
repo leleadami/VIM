@@ -1,0 +1,16 @@
+# Dataset e dati pesanti
+dataset/
+data/
+
+# Modelli salvati
+models/
+*.pth
+*.pt
+
+# Ambiente virtuale
+.venv/
+
+# Cache e file di sistema
+__pycache__/
+*.pyc
+.DS_Store
