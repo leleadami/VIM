@@ -10,6 +10,12 @@ models/
 # Ambiente virtuale
 .venv/
 
+# Risultati e output temporanei
+results/
+
+# Paper e documenti pesanti
+papers/
+
 # Cache e file di sistema
 __pycache__/
 *.pyc
