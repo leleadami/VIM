@@ -18,10 +18,12 @@ papers/
 
 # Figure generate dal codice
 figures/
+generate_figures.py
 
 # Configurazioni e dati locali
 .claude/
 comandi.md
+report.tex
 
 # Cache e file di sistema
 __pycache__/
