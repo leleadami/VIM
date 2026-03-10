@@ -16,6 +16,13 @@ results/
 # Paper e documenti pesanti
 papers/
 
+# Figure generate dal codice
+figures/
+
+# Configurazioni e dati locali
+.claude/
+comandi.md
+
 # Cache e file di sistema
 __pycache__/
 *.pyc
