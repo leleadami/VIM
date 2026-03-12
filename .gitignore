@@ -14,7 +14,7 @@ models/
 results/
 
 # Paper e documenti pesanti
-papers/
+docs/
 
 # Figure generate dal codice
 figures/

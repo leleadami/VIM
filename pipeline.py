@@ -21,6 +21,12 @@ Usage
 import argparse
 import os
 import time
+from pathlib import Path
+
+import sys
+_PROJECT_ROOT = str(Path(__file__).resolve().parent)
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+
 import numpy as np
 import pandas as pd
 
@@ -51,8 +57,12 @@ FEATURE_GROUPS = {
     "FFT":              ["fft"],
     "Wavelet":          ["wavelet"],
     "Stats":            ["stats"],
+    "Laws":             ["laws"],
+    "DSIFT":            ["dsift"],
     "LBP+GLCM+Gabor":   ["lbp", "glcm", "gabor"],
     "LBP_MS+GLCM+Gabor": ["lbp_ms", "glcm", "gabor"],
+    "Stats+GLCM+Gabor": ["stats", "glcm", "gabor"],
+    "Stats+Laws+GLCM":  ["stats", "laws", "glcm"],
     "All":              AVAILABLE_FEATURES,
 }
 
@@ -234,7 +244,7 @@ def parse_args():
     p.add_argument("--detectors", nargs="+", default=None,
                    help="Detectors to use (default: all unsupervised). "
                         "Options: " + ", ".join(UNSUPERVISED_DETECTORS.keys()))
-    p.add_argument("--out", default="results",
+    p.add_argument("--out", default=os.path.join(_PROJECT_ROOT, "results"),
                    help="Output directory for results (default: results/)")
     p.add_argument("--img-size", type=int, default=256,
                    help="Resize images to this square size (default: 256)")

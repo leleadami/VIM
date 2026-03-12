@@ -336,11 +336,112 @@ def statistical_moments(img: np.ndarray) -> np.ndarray:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Laws Texture Energy Measures (Laws, 1980)
+# ────────────────────────────────────────────────────────────────────────────
+
+def laws_features(img: np.ndarray) -> np.ndarray:
+    """
+    Laws texture energy: convolve with 5x5 kernels from L5, E5, S5, R5
+    vectors. Compute energy (mean abs) for each of 14 symmetric pairs.
+    Returns 14 values.
+    """
+    L5 = np.array([1, 4, 6, 4, 1], dtype=np.float64)
+    E5 = np.array([-1, -2, 0, 2, 1], dtype=np.float64)
+    S5 = np.array([-1, 0, 2, 0, -1], dtype=np.float64)
+    R5 = np.array([1, -4, 6, -4, 1], dtype=np.float64)
+
+    vectors = [L5, E5, S5, R5]
+    names = ['L', 'E', 'S', 'R']
+
+    img_f = img.astype(np.float64)
+    # Remove DC component
+    img_f = img_f - img_f.mean()
+
+    # Compute all 16 filter responses
+    responses = {}
+    for i, (v1, n1) in enumerate(zip(vectors, names)):
+        for j, (v2, n2) in enumerate(zip(vectors, names)):
+            kernel = np.outer(v1, v2)
+            resp = cv2.filter2D(img_f, -1, kernel)
+            responses[n1 + n2] = resp
+
+    # 14 symmetric energy features (excluding LL)
+    pairs = []
+    for i, n1 in enumerate(names):
+        for j, n2 in enumerate(names):
+            if i == 0 and j == 0:
+                continue  # skip LL
+            key = n1 + n2
+            key_sym = n2 + n1
+            pair = tuple(sorted([key, key_sym]))
+            if pair not in pairs:
+                pairs.append(pair)
+
+    feats = []
+    for p in pairs:
+        if p[0] == p[1]:
+            energy = np.mean(np.abs(responses[p[0]]))
+        else:
+            energy = np.mean(np.abs(responses[p[0]] + responses[p[1]])) / 2.0
+        feats.append(energy)
+
+    return np.array(feats, dtype=np.float64)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Dense SIFT + Bag of Visual Words (BoVW)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Global codebook (built lazily at first call)
+_bovw_codebook = None
+_bovw_n_words = 64
+
+def _build_codebook(descriptors: np.ndarray, n_words: int = 64):
+    """Build KMeans codebook from SIFT descriptors."""
+    from sklearn.cluster import MiniBatchKMeans
+    kmeans = MiniBatchKMeans(n_clusters=n_words, random_state=42,
+                             batch_size=1000, max_iter=100)
+    kmeans.fit(descriptors)
+    return kmeans
+
+def dsift_bovw_features(img: np.ndarray) -> np.ndarray:
+    """
+    Dense SIFT + Bag of Visual Words.
+    Extract SIFT on a dense grid, encode as histogram of visual words.
+    Returns histogram of n_words bins (default 64).
+    """
+    global _bovw_codebook
+    sift = cv2.SIFT_create()
+    h, w = img.shape[:2]
+    step = 8
+    kps = [cv2.KeyPoint(float(x), float(y), float(step))
+           for y in range(step, h - step, step)
+           for x in range(step, w - step, step)]
+
+    _, descriptors = sift.compute(img, kps)
+    if descriptors is None or len(descriptors) == 0:
+        return np.zeros(_bovw_n_words, dtype=np.float64)
+
+    # Build codebook on first call (from this image's descriptors as seed)
+    if _bovw_codebook is None:
+        _bovw_codebook = _build_codebook(descriptors, _bovw_n_words)
+
+    # Encode: assign each descriptor to nearest word, build histogram
+    words = _bovw_codebook.predict(descriptors)
+    hist = np.bincount(words, minlength=_bovw_n_words).astype(np.float64)
+    # L1 normalize
+    total = hist.sum()
+    if total > 0:
+        hist /= total
+    return hist
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Dispatcher
 # ────────────────────────────────────────────────────────────────────────────
 
 AVAILABLE_FEATURES = ["lbp", "lbp_ms", "clbp", "gabor", "glcm", "hog",
-                      "fft", "wavelet", "stats"]
+                      "fft", "wavelet", "stats", "laws", "dsift"]
 
 _EXTRACTOR_MAP = {
     "lbp":     lbp_features,
@@ -352,6 +453,8 @@ _EXTRACTOR_MAP = {
     "fft":     fft_features,
     "wavelet": wavelet_features,
     "stats":   statistical_moments,
+    "laws":    laws_features,
+    "dsift":   dsift_bovw_features,
 }
 
 
