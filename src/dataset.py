@@ -75,7 +75,12 @@ def load_mvtec_category(root: str, category: str, img_size: tuple = (256, 256)):
 def _load_split(folder: Path, label: int, img_size: tuple):
     images, labels = [], []
     for path in sorted(folder.glob("*.png")):
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) 
+        # questo comporta su wood un detection rate basso (62%). 
+        # Dove perdiamo informazione:
+        # - color su wood ha detection rate 62% — il difetto è una macchia di colore diverso, che
+        #   in grayscale diventa quasi invisibile se la luminosità è simile
+        # - metal_contamination su carpet — stesso problema
         if img is None:
             continue
         img = cv2.resize(img, (img_size[1], img_size[0]))
@@ -87,3 +92,7 @@ def _load_split(folder: Path, label: int, img_size: tuple):
 def list_categories(root: str):
     """Return all category names present in the MVTec root directory."""
     return sorted([d.name for d in Path(root).iterdir() if d.is_dir()])
+
+
+#il modello impara da X_train, poi assegna uno score a ogni
+#immagine di X_test, e confrontiamo quegli score con y_test per sapere quanto è bravo.

@@ -20,12 +20,6 @@ docs/
 figures/
 generate_figures.py
 
-# Configurazioni e dati locali
-.claude/
-comandi.md
-report.tex
-prompt.txt
-CLAUDE.md
 
 # Cache e file di sistema
 __pycache__/

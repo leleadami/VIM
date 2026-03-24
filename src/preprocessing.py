@@ -12,9 +12,25 @@ Denoising methods:
     Gyimah et al. (2021), arXiv:2112.04021
 """
 
+"""
+1. Denoising — rimuove il rumore dall'immagine (6 metodi)
+  2. Contrast enhancement — migliora la visibilità della texture (2 metodi)
+
+  immagine grezza
+        ↓
+    denoising       ← rimuove rumore
+        ↓
+    enhancement     ← aumenta contrasto
+        ↓
+  immagine pronta per feature extraction
+
+  L'ordine è importante: prima denoisi, poi amplifichi il contrasto — se facessi il
+  contrario amplificheresti anche il rumore.
+"""
+
 import cv2
 import numpy as np
-import pywt
+import pywt # PyWavelets for wavelet transforms in wavelet_denoise()
 
 
 # ── Denoising ───────────────────────────────────────────────────────────────
@@ -23,16 +39,45 @@ def gaussian_denoise(img: np.ndarray, ksize: int = 5, sigma: float = 1.0) -> np.
     """Gaussian low-pass filter for additive Gaussian noise."""
     return cv2.GaussianBlur(img, (ksize, ksize), sigma)
 
+"""
+Applica un filtro gaussiano — ogni pixel diventa la media pesata dei suoi vicini,
+  dove i pesi seguono una campana gaussiana. ksize=5 = kernel 5x5 pixel. sigma=1.0 =
+  quanto è larga la campana.
+
+  Effetto: sfoca leggermente l'immagine, riduce rumore casuale pixel per pixel. Il più
+  semplice e veloce dei 6 metodi — per questo lo usiamo come default.
+"""
+
 
 def median_denoise(img: np.ndarray, ksize: int = 3) -> np.ndarray:
     """Median filter — robust to salt-and-pepper noise."""
     return cv2.medianBlur(img, ksize)
+
+"""
+Ogni pixel viene sostituito con la mediana dei suoi vicini in un intorno ksize×ksize.
+   La mediana è robusta agli outlier — un pixel completamente bianco (sale) o nero
+  (pepe) sparisce perché la mediana lo ignora.
+
+  Effetto: ottimo per rumore salt-and-pepper (pixel isolati bianchi/neri), preserva i
+  bordi meglio del gaussiano.
+"""
 
 
 def bilateral_denoise(img: np.ndarray, d: int = 9,
                       sigma_color: float = 75, sigma_space: float = 75) -> np.ndarray:
     """Bilateral filter — edge-preserving smoothing."""
     return cv2.bilateralFilter(img, d, sigma_color, sigma_space)
+"""
+Come il gaussiano ma con due pesi: uno spaziale (distanza dal pixel) e uno di
+  intensità (differenza di colore). Pixel vicini ma con intensità molto diversa (=
+  bordi) vengono ignorati.
+
+  - sigma_color=75 — pixel con differenza >75 livelli di grigio non contribuiscono
+  - sigma_space=75 — raggio spaziale di influenza
+
+  Effetto: sfoca le zone piatte ma preserva i bordi — il migliore per immagini con
+  strutture nette.
+"""
 
 
 def nlmeans_denoise(img: np.ndarray, h: float = 10,
@@ -73,9 +118,26 @@ def wavelet_denoise(img: np.ndarray, wavelet: str = "db4",
     img_f = img.astype(np.float64)
     coeffs = pywt.wavedec2(img_f, wavelet=wavelet, level=level)
 
+    """
+    Decompone l'immagine in sotto-bande. Con level=3 la lista è:
+
+  coeffs[0]  → approssimazione LL   ← immagine sfocata, bassa frequenza
+  coeffs[1]  → dettagli livello 3   ← bassa frequenza, strutture grandi tupla (LH, HL, HH)
+  coeffs[2]  → dettagli livello 2   ← media frequenza tupla (LH, HL, HH)
+  coeffs[3]  → dettagli livello 1   ← ALTA frequenza, dettagli fini tupla (LH, HL, HH)
+
+  Importante: l'ordine è invertito — il livello 1 (più fine) è in fondo alla lista.
+  Ogni elemento coeffs[1:] è una tupla di 3 sotto-bande: (LH, HL, HH) = bordi
+  orizzontali, verticali, diagonali.
+
+"""
+
     # Estimate noise sigma from the finest HH sub-band (MAD estimator)
     detail_coeffs = coeffs[-1]
     sigma_noise = np.median(np.abs(detail_coeffs[2])) / 0.6745
+    # HH = detail_coeffs[2] (diagonali)
+    # 0.6745 = costante matematica che converte la mediana in stima della deviazione standard
+    # sigma_noise = stima di quanto rumore c'è nell'immagine
 
     # Apply BayesShrink to each detail sub-band
     new_coeffs = [coeffs[0]]  # keep approximation unchanged
