@@ -104,11 +104,15 @@ def run_category(dataset_root: str, category: str,
     5. Run supervised baselines
     6. Save all results
     """
+    # Suffisso preprocessing per distinguere i risultati di run diverse
+    pp_tag = f"{denoise or 'none'}_{enhance or 'none'}"
     out_dir = os.path.join(out_root, category)
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"\n{'='*60}")
     print(f"  Category: {category.upper()}")
+    print(f"  Preprocessing: {denoise or 'none'} + {enhance or 'none'}")
+    print(f"  Image size: {img_size[0]}x{img_size[1]}")
     print(f"{'='*60}")
 
     # ── 1. Load ──────────────────────────────────────────────────────────────
@@ -122,12 +126,16 @@ def run_category(dataset_root: str, category: str,
     X_train_pp = preprocess_batch(X_train_raw, denoise=denoise, enhance=enhance)
     X_test_pp  = preprocess_batch(X_test_raw,  denoise=denoise, enhance=enhance)
 
+    # Cartella base per questa run (category/pp_tag)
+    run_dir = os.path.join(out_dir, pp_tag)
+    os.makedirs(run_dir, exist_ok=True)
+
     # ── 2b. Save preprocessing comparison plot ──────────────────────────────
     if len(X_train_raw) > 0:
         plot_preprocessing_comparison(
             X_train_raw[0], X_train_pp[0],
             title=f"{category} — Preprocessing ({denoise or 'none'} + {enhance or 'none'})",
-            out_path=os.path.join(out_dir, "preprocessing_comparison.png")
+            out_path=os.path.join(run_dir, "preprocessing_comparison.png")
         )
 
     # ── 3. Feature extraction per group ──────────────────────────────────────
@@ -168,7 +176,7 @@ def run_category(dataset_root: str, category: str,
     plot_pca_scatter(
         X_train_full[y_train == 0], X_test_full, y_test,
         title=f"{category} — PCA Feature Space (all descriptors)",
-        out_path=os.path.join(out_dir, "pca_scatter_all.png")
+        out_path=os.path.join(run_dir, "pca_scatter_all.png")
     )
 
     print(f"\n[{category}] Running unsupervised experiment matrix "
@@ -180,10 +188,19 @@ def run_category(dataset_root: str, category: str,
         y_test=y_test,
         feature_sets=feat_index_map,
         detector_classes=selected_detectors,
-        out_dir=os.path.join(out_dir, "unsupervised"),
+        out_dir=run_dir,
     )
-    save_results(df_unsup, out_dir=os.path.join(out_dir, "unsupervised"),
-                 prefix=f"{category}_unsupervised")
+    # Prefix con tag preprocessing — es. wood_gaussian_clahe_unsupervised
+    prefix = f"{category}_{pp_tag}_unsupervised"
+    save_results(df_unsup, out_dir=run_dir, prefix=prefix)
+
+    # Salva anche metadati preprocessing
+    meta_path = os.path.join(run_dir, f"{prefix}_meta.txt")
+    with open(meta_path, "w") as f:
+        f.write(f"category:   {category}\n")
+        f.write(f"denoise:    {denoise or 'none'}\n")
+        f.write(f"enhance:    {enhance or 'none'}\n")
+        f.write(f"img_size:   {img_size[0]}x{img_size[1]}\n")
 
     print(f"\n[{category}] Unsupervised AUROC matrix:")
     print(df_unsup.to_string())

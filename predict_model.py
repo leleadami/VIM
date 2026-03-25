@@ -70,11 +70,38 @@ def _find_best_combo(category: str) -> tuple:
     Restituisce (feature_list, detector_name, auroc).
     Se il CSV non esiste, esce con errore.
     """
-    csv_path = _PROJECT_ROOT / "results" / category / "unsupervised" / f"{category}_unsupervised_auroc.csv"
-    if not csv_path.exists():
+    unsup_dir = _PROJECT_ROOT / "results" / category / "unsupervised"
+
+    cat_dir = _PROJECT_ROOT / "results" / category
+
+    # Raccoglie tutti i CSV da tutte le sottocartelle (es. gaussian_clahe/, nlmeans_clahe/)
+    all_csvs = list(cat_dir.glob(f"**/{category}_*auroc.csv"))
+
+    if not all_csvs:
         sys.exit(f"Errore: CSV non trovato per '{category}'.\n"
-                 f"  Atteso: {csv_path}\n"
+                 f"  Cartella: {cat_dir}\n"
                  f"  Lancia prima: python pipeline.py --dataset dataset --category {category}")
+
+    # Sceglie il CSV con AUROC massimo tra tutti i disponibili
+    import pandas as pd
+    best_csv = None
+    best_global_auroc = -1.0
+    for c in all_csvs:
+        try:
+            df_tmp = pd.read_csv(c, index_col=0)
+            valid_cols = [col for col in df_tmp.columns if col in UNSUPERVISED_DETECTORS
+                          and col != "PCANullSubspace"]
+            if not valid_cols:
+                continue
+            max_val = df_tmp[valid_cols].max().max()
+            if max_val > best_global_auroc:
+                best_global_auroc = max_val
+                best_csv = c
+        except Exception:
+            continue
+
+    csv_path = best_csv
+    print(f"[auto] Miglior CSV trovato: {csv_path.name} (AUROC max={best_global_auroc:.4f})")
 
     import pandas as pd
     df = pd.read_csv(csv_path, index_col=0)

@@ -83,7 +83,7 @@ class SklearnDetector:
         Xp = self._pre.fit_transform(X)
         self._model.fit(Xp)
         raw_scores = -getattr(self._model, self._score_fn)(Xp)
-        self._threshold = np.percentile(raw_scores, 90)
+        self._threshold = np.percentile(raw_scores, 95)
         return self
 
     def score_samples(self, X: np.ndarray) -> np.ndarray:
@@ -105,7 +105,7 @@ def _make_ocsvm():
 
 def _make_iforest():
     return SklearnDetector(
-        _IF(n_estimators=200, contamination=0.05, random_state=42, n_jobs=-1))
+        _IF(n_estimators=200, contamination="auto", random_state=42, n_jobs=-1))
 
 def _make_lof():
     return SklearnDetector(
