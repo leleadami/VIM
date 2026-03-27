@@ -1,165 +1,143 @@
 # Interpretable Texture-Based Anomaly Detection for Industrial Surface Inspection
 
-Classical signal processing and machine learning pipeline for anomaly detection on industrial surfaces. **No deep learning, no pretrained neural networks** — every method is fully interpretable and explainable.
+Classical signal processing and machine learning pipeline for anomaly detection on industrial surfaces.
+**No deep learning, no pretrained neural networks** — every method is fully interpretable and explainable.
 
-Final exam project (6 ECTS) — University of Trento.
+> Final exam project (6 ECTS) — University of Trento
 
 ## Overview
 
-The system detects surface defects on industrial products using the [MVTec Anomaly Detection Dataset](https://www.mvtec.com/company/research/datasets/mvtec-ad). It follows a one-class classification paradigm: models are trained exclusively on normal (defect-free) images, then anomalies are detected as deviations from the learned normal distribution.
+The system detects surface defects on industrial products using the [MVTec Anomaly Detection Dataset](https://www.mvtec.com/company/research/datasets/mvtec-ad). It follows a **one-class classification** paradigm: models are trained exclusively on normal (defect-free) images, then anomalies are detected as deviations from the learned normal distribution.
 
 **Best result:** Stats + Isolation Forest on *wood* — **AUROC 0.9316**
 
-## Pipeline Architecture
+## Getting Started
 
-```
-MVTec images
-    │
-    ▼
-┌─────────────────────────────────┐
-│  1. PREPROCESSING               │
-│  Denoising: Gaussian, Median,   │
-│  Bilateral, NLM, Wavelet, RCLBP │
-│  Contrast: CLAHE, Hist. Eq.     │
-└──────────────┬──────────────────┘
-               ▼
-┌─────────────────────────────────┐
-│  2. FEATURE EXTRACTION          │
-│  LBP, CLBP, Gabor, GLCM, HOG, │
-│  FFT, Wavelet, Stats, Laws,    │
-│  Dense SIFT + BoVW             │
-└──────────────┬──────────────────┘
-               ▼
-┌─────────────────────────────────┐
-│  3. DIMENSIONALITY REDUCTION    │
-│  PCA (95% variance)            │
-│  + PCA Null Subspace scoring   │
-└──────────────┬──────────────────┘
-               ▼
-┌─────────────────────────────────┐
-│  4. ANOMALY DETECTION           │
-│  OC-SVM, Isolation Forest, LOF, │
-│  GMM, Elliptic Envelope, KDE,  │
-│  kNN, Mahalanobis, Ensemble    │
-└──────────────┬──────────────────┘
-               ▼
-┌─────────────────────────────────┐
-│  5. EVALUATION                  │
-│  AUROC, F1, Precision, Recall, │
-│  ROC curves, Heatmaps          │
-└─────────────────────────────────┘
-```
+### Prerequisites
 
-## Project Structure
+- Python 3.9+
+- [MVTec AD dataset](https://www.mvtec.com/company/research/datasets/mvtec-ad) placed in `dataset/`
 
-```
-ESI/
-├── pipeline.py            # Experiment matrix runner (features × detectors)
-├── predict_model.py       # Single-image predictor with graphical output
-├── requirements.txt
-├── src/
-│   ├── dataset.py             # MVTec AD loader
-│   ├── preprocessing.py       # 6 denoisers + CLAHE/HE
-│   ├── feature_extraction.py  # 11 feature extractors
-│   ├── models.py              # 10 detectors + PCA Null Subspace
-│   └── evaluate.py            # Metrics and plots
-├── docs/
-│   ├── esame.tex              # Compact two-column exam report
-│   ├── report.tex             # Exhaustive technical reference (60+ pages)
-│   ├── codice.tex             # Code documentation
-│   ├── comandi.md             # Usage commands
-│   ├── figures/               # LaTeX figures
-│   └── papers/                # References (.bib + PDFs)
-├── dataset/                   # MVTec AD (not tracked in git)
-├── models/                    # Trained .pkl models
-└── results/                   # CSV tables, ROC curves, heatmaps
-```
-
-## Installation
+### Installation
 
 ```bash
-# Clone the repository
 git clone <repo-url> && cd ESI
-
-# Create a virtual environment (recommended)
 python -m venv .venv && source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-**Requirements:** Python 3.9+, NumPy, SciPy, OpenCV, scikit-learn, scikit-image, Pandas, Matplotlib, PyWavelets.
-
-## Dataset
-
-Download the [MVTec AD dataset](https://www.mvtec.com/company/research/datasets/mvtec-ad) and place it in `dataset/`. Expected structure:
+Download the MVTec AD dataset and place it in `dataset/` with this structure:
 
 ```
 dataset/
 ├── wood/
-│   ├── train/good/        # Normal images (training)
+│   ├── train/good/          # Normal images (training)
 │   └── test/
-│       ├── good/          # Normal images (test)
-│       ├── color/         # Defect type 1
-│       ├── hole/          # Defect type 2
-│       └── scratch/       # Defect type 3
+│       ├── good/            # Normal images (test)
+│       ├── color/           # Defect type
+│       ├── hole/
+│       └── scratch/
 ├── tile/
 ├── grid/
 ├── hazelnut/
-├── carpet/
-└── leather/
+└── ...
 ```
 
 ## Usage
 
-### 1. Run the experiment pipeline
+The project provides two entry points: `pipeline.py` for running experiments and `predict_model.py` for single-image inference.
 
-The pipeline evaluates all combinations of feature descriptors and anomaly detectors, producing AUROC scores, ROC curves, and heatmaps.
+---
+
+### `pipeline.py` — Experiment Runner
+
+Evaluates all combinations of feature descriptors and anomaly detectors, producing AUROC scores, ROC curves, and heatmaps.
+
+```
+usage: pipeline.py [-h] --dataset PATH [--category NAME] [--all-categories]
+                   [--features F [F ...]] [--detectors D [D ...]]
+                   [--out DIR] [--img-size {128,256,512,1024}]
+                   [--denoise {gaussian,median,bilateral,nlmeans,wavelet,rclbp,none}]
+                   [--enhance {clahe,histeq,none}]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--dataset` | *(required)* | Path to MVTec root directory |
+| `--category` | — | Single category (e.g. `wood`, `tile`, `grid`) |
+| `--all-categories` | — | Run on all categories found in `--dataset` |
+| `--features` | all | Feature groups to evaluate (see table below) |
+| `--detectors` | all | Detectors to evaluate (see table below) |
+| `--out` | `results/` | Output directory |
+| `--img-size` | `256` | Resize images to NxN |
+| `--denoise` | `gaussian` | Denoising filter |
+| `--enhance` | `clahe` | Contrast enhancement |
+
+**Examples:**
 
 ```bash
-# Single category
+# Run full experiment matrix on a single category
 python pipeline.py --dataset dataset --category wood
 
-# All categories sequentially
+# Run on all categories
 python pipeline.py --dataset dataset --all-categories
 
-# Specific features and detectors
+# Select specific features and detectors
 python pipeline.py --dataset dataset --category tile \
-    --features lbp glcm gabor --detectors OC-SVM IsolationForest
+    --features Stats HOG --detectors OC-SVM IsolationForest
+
+# Custom preprocessing and image size
+python pipeline.py --dataset dataset --category grid \
+    --denoise bilateral --enhance histeq --img-size 512
+
 ```
 
-Results are saved to `results/<category>/`:
-- `<category>_unsupervised_auroc.csv` — AUROC matrix (features × detectors)
-- `<category>_unsupervised_heatmap.png` — Visual heatmap of results
-- `roc_top5_comparison.png` — ROC curves for top 5 combinations
-- `pca_scatter_all.png` — PCA scatter plot
-- `preprocessing_comparison.png` — Denoising comparison
+**Output** (`results/<category>/`):
 
-### 2. Train best models for prediction
+| File | Content |
+|---|---|
+| `*_unsupervised_auroc.csv` | AUROC matrix (features x detectors) |
+| `*_unsupervised_heatmap.png` | Visual heatmap of results |
+| `roc_top5_comparison.png` | ROC curves for top 5 combinations |
+| `pca_scatter_all.png` | PCA scatter plot |
+| `preprocessing_comparison.png` | Before/after denoising |
 
-After running the pipeline, train the best-performing model for each category:
+---
 
-```bash
-# Train all categories (reads best combo from pipeline CSV)
-python predict_model.py --train-all
+### `predict_model.py` — Single-Image Predictor
 
-# Train a single category
-python predict_model.py --category wood --retrain
+Classifies a surface image as normal or defective using a trained model. On first run, the model is automatically trained from the dataset and cached to disk.
+
+```
+usage: predict_model.py [-h] [--category {wood,tile,grid,hazelnut,carpet,leather}]
+                        [--retrain] [--train-all]
+                        [image]
 ```
 
-Models are saved to `models/<category>_best.pkl`.
+| Option | Default | Description |
+|---|---|---|
+| `image` | — | Path to the image to analyse |
+| `--category` | auto | MVTec category (auto-detected from path if omitted) |
+| `--retrain` | — | Force retraining even if a cached model exists |
+| `--train-all` | — | Train and save the best model for every category |
 
-### 3. Predict on a single image
+**Examples:**
 
 ```bash
-# Auto-detects category from path
+# Predict on a single image (category auto-detected from path)
 python predict_model.py dataset/wood/test/scratch/001.png
 
 # Explicit category
 python predict_model.py image.png --category wood
+
+# Force retraining before prediction
+python predict_model.py dataset/tile/test/rough/003.png --retrain
+
+# Train all models at once (reads best combo from pipeline CSV)
+python predict_model.py --train-all
 ```
 
-Outputs a graphical panel showing the image, anomaly score, classification (NORMALE/DIFETTOSO), and score distribution.
+Models are cached in `models/<category>_best.pkl`.
 
 ## Feature Descriptors
 
@@ -168,7 +146,7 @@ Outputs a graphical panel showing the image, anomaly score, classification (NORM
 | **LBP** | Local Binary Pattern — texture microstructure |
 | **LBP Multi-Scale** | LBP at 3 scales (R=1,2,3) concatenated |
 | **CLBP** | Completed LBP with sign + magnitude components |
-| **Gabor** | Filter bank (6 orientations × 4 scales) — frequency analysis |
+| **Gabor** | Filter bank (6 orientations x 4 scales) — frequency analysis |
 | **GLCM** | Gray-Level Co-occurrence Matrix — statistical texture |
 | **HOG** | Histogram of Oriented Gradients — edge structure |
 | **FFT** | Frequency band energy via 2D Fourier Transform |
@@ -192,7 +170,26 @@ Outputs a graphical panel showing the image, anomaly score, classification (NORM
 | **Ensemble** | One-class | Score fusion of IF + OC-SVM + LOF + EE |
 | **PCA Null Subspace** | Unsupervised | Projection onto low-variance subspace |
 
-## Key References
+## Project Structure
+
+```
+ESI/
+├── pipeline.py              # Experiment matrix runner (features x detectors)
+├── predict_model.py         # Single-image predictor with graphical output
+├── predict_models_all.py    # Batch prediction across categories
+├── requirements.txt
+├── src/
+│   ├── dataset.py           # MVTec AD loader
+│   ├── preprocessing.py     # 6 denoisers + CLAHE / Histogram Equalization
+│   ├── feature_extraction.py# 11 feature extractors
+│   ├── models.py            # 10 detectors + PCA Null Subspace
+│   └── evaluate.py          # Metrics, ROC curves, heatmaps
+├── dataset/                 # MVTec AD images (not tracked)
+├── models/                  # Trained .pkl models (not tracked)
+└── results/                 # CSV tables, ROC curves, heatmaps (not tracked)
+```
+
+## References
 
 - Bergmann et al., *MVTec AD — A Comprehensive Real-World Dataset for Unsupervised Anomaly Detection*, CVPR 2019
 - Gyimah et al., *RCLBP: Robust Completed Local Binary Pattern for Surface Defect Detection*, arXiv:2112.04021
