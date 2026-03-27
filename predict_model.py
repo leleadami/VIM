@@ -51,15 +51,11 @@ IMG_SIZE    = (256, 256)
 
 # Mappa nomi CSV → nomi feature_extraction
 _FEAT_GROUP_MAP = {
-    "LBP": ["lbp"], "LBP_MS": ["lbp_ms"], "CLBP": ["clbp"],
     "Gabor": ["gabor"], "GLCM": ["glcm"], "HOG": ["hog"],
-    "FFT": ["fft"], "Wavelet": ["wavelet"], "Stats": ["stats"],
-    "Laws": ["laws"], "DSIFT": ["dsift"],
-    "LBP+GLCM+Gabor": ["lbp", "glcm", "gabor"],
-    "LBP_MS+GLCM+Gabor": ["lbp_ms", "glcm", "gabor"],
+    "FFT": ["fft"], "Stats": ["stats"], "Laws": ["laws"],
     "Stats+GLCM+Gabor": ["stats", "glcm", "gabor"],
     "Stats+Laws+GLCM": ["stats", "laws", "glcm"],
-    "All": ["lbp", "lbp_ms", "clbp", "gabor", "glcm", "hog", "fft", "wavelet", "stats", "laws", "dsift"],
+    "All": ["gabor", "glcm", "hog", "fft", "stats", "laws"],
 }
 
 

@@ -5,10 +5,11 @@ Evaluation metrics, plots, and the experiment matrix runner.
 
 Functions
 ---------
-compute_metrics     : AUROC, F1, Precision, Recall, Confusion Matrix
-plot_roc_curve      : ROC curve for one detector/feature combination
-plot_confusion_matrix
-plot_score_distribution : distribution of anomaly scores (normal vs defective)
+compute_metrics         : AUROC, F1, Precision, Recall, Confusion Matrix
+plot_roc_curves_comparison : ROC curves for multiple combinations
+plot_experiment_heatmap : heatmap of AUROC matrix
+plot_pca_scatter        : PCA projection of feature space
+plot_preprocessing_comparison : before/after preprocessing
 run_experiment_matrix   : full Feature × Detector grid → DataFrame of AUROC
 save_results            : persist results as CSV
 """
@@ -22,7 +23,7 @@ import matplotlib.pyplot as plt
 
 from sklearn.metrics import (
     roc_auc_score, f1_score, precision_score, recall_score,
-    confusion_matrix, roc_curve, ConfusionMatrixDisplay
+    confusion_matrix, roc_curve
 )
 
 
@@ -65,26 +66,6 @@ def compute_metrics(y_true: np.ndarray, scores: np.ndarray,
 # Plots
 # ────────────────────────────────────────────────────────────────────────────
 
-def plot_roc_curve(y_true: np.ndarray, scores: np.ndarray,
-                  label: str = "", out_path: str = None):
-    """Plot and optionally save a single ROC curve."""
-    fpr, tpr, _ = roc_curve(y_true, scores)
-    auc = roc_auc_score(y_true, scores)
-
-    fig, ax = plt.subplots(figsize=(5, 4))
-    ax.plot(fpr, tpr, lw=2, label=f"{label}  (AUC={auc:.3f})")
-    ax.plot([0, 1], [0, 1], "k--", lw=1)
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("ROC Curve")
-    ax.legend(loc="lower right")
-    fig.tight_layout()
-    if out_path:
-        fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return fig
-
-
 def plot_roc_curves_comparison(results: dict, out_path: str = None):
     """
     Plot multiple ROC curves on the same axes.
@@ -103,42 +84,6 @@ def plot_roc_curves_comparison(results: dict, out_path: str = None):
     ax.set_ylabel("True Positive Rate")
     ax.set_title("ROC Curves — Method Comparison")
     ax.legend(loc="lower right", fontsize=7)
-    fig.tight_layout()
-    if out_path:
-        fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return fig
-
-
-def plot_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray,
-                          title: str = "", out_path: str = None):
-    """Normalised confusion matrix plot."""
-    cm = confusion_matrix(y_true, y_pred, normalize="true")
-    fig, ax = plt.subplots(figsize=(4, 3.5))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm,
-                                   display_labels=["Normal", "Defective"])
-    disp.plot(ax=ax, colorbar=False, values_format=".2f")
-    ax.set_title(title)
-    fig.tight_layout()
-    if out_path:
-        fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return fig
-
-
-def plot_score_distribution(scores_normal: np.ndarray,
-                            scores_defect: np.ndarray,
-                            title: str = "", out_path: str = None):
-    """Histogram of anomaly scores for normal vs defective samples."""
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    ax.hist(scores_normal, bins=40, alpha=0.6, label="Normal", color="steelblue",
-            density=True)
-    ax.hist(scores_defect, bins=40, alpha=0.6, label="Defective", color="tomato",
-            density=True)
-    ax.set_xlabel("Anomaly Score")
-    ax.set_ylabel("Density")
-    ax.set_title(title or "Score Distribution")
-    ax.legend()
     fig.tight_layout()
     if out_path:
         fig.savefig(out_path, dpi=150)
@@ -196,15 +141,14 @@ def plot_pca_scatter(X_train: np.ndarray, X_test: np.ndarray,
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
 
+    # Fit solo su training (normali) per evitare data leakage
     scaler = StandardScaler()
-    X_all = np.vstack([X_train, X_test])
-    X_all_s = scaler.fit_transform(X_all)
+    X_train_s = scaler.fit_transform(X_train)
+    X_test_s = scaler.transform(X_test)
 
     pca = PCA(n_components=2, random_state=42)
-    X_2d = pca.fit_transform(X_all_s)
-
-    X_train_2d = X_2d[:len(X_train)]
-    X_test_2d = X_2d[len(X_train):]
+    X_train_2d = pca.fit_transform(X_train_s)
+    X_test_2d = pca.transform(X_test_s)
 
     fig, ax = plt.subplots(figsize=(6, 5))
     ax.scatter(X_train_2d[:, 0], X_train_2d[:, 1],
@@ -221,32 +165,6 @@ def plot_pca_scatter(X_train: np.ndarray, X_test: np.ndarray,
     ax.set_ylabel(f"PC2 ({var_explained[1]:.1%} var)")
     ax.set_title(title or "PCA — Feature Space Projection")
     ax.legend(fontsize=8)
-    fig.tight_layout()
-    if out_path:
-        fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return fig
-
-
-def plot_feature_importance(feature_names: list, importances: np.ndarray,
-                            title: str = "", top_k: int = 20,
-                            out_path: str = None):
-    """
-    Horizontal bar chart of feature importances (e.g. from Random Forest).
-
-    Aids interpretability: shows which texture descriptors contribute most
-    to the anomaly detection decision.
-    """
-    idx = np.argsort(importances)[-top_k:]
-    fig, ax = plt.subplots(figsize=(6, max(3, top_k * 0.25)))
-    ax.barh(range(len(idx)), importances[idx], color="steelblue")
-    if feature_names:
-        labels = [feature_names[i] if i < len(feature_names)
-                  else f"f{i}" for i in idx]
-        ax.set_yticks(range(len(idx)))
-        ax.set_yticklabels(labels, fontsize=7)
-    ax.set_xlabel("Importance")
-    ax.set_title(title or "Feature Importance")
     fig.tight_layout()
     if out_path:
         fig.savefig(out_path, dpi=150)

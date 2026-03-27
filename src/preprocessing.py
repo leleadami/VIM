@@ -253,5 +253,14 @@ def preprocess(img: np.ndarray,
 
 
 def preprocess_batch(images: np.ndarray, **kwargs) -> np.ndarray:
-    """Apply preprocess() to every image in an (N, H, W) array."""
-    return np.array([preprocess(img, **kwargs) for img in images])
+    """
+    Applica preprocess() a ogni immagine del batch in parallelo.
+    Usa thread perché OpenCV (gaussian, bilateral, CLAHE) rilascia il GIL.
+    Attenzione: nlmeans/rclbp usano già tutti i core internamente —
+    con quei metodi il guadagno è minore.
+    """
+    from joblib import Parallel, delayed
+    results = Parallel(n_jobs=-1, prefer="threads")(
+        delayed(preprocess)(img, **kwargs) for img in images
+    )
+    return np.array(results)

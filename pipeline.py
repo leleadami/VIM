@@ -36,7 +36,6 @@ from feature_extraction import extract_batch, AVAILABLE_FEATURES
 from models import UNSUPERVISED_DETECTORS, SUPERVISED_CLASSIFIERS
 from evaluate import (
     run_experiment_matrix, save_results,
-    plot_roc_curves_comparison, compute_metrics,
     plot_pca_scatter, plot_preprocessing_comparison
 )
 
@@ -48,44 +47,25 @@ from evaluate import (
 # "fused" uses all features concatenated.
 
 FEATURE_GROUPS = {
-    "LBP":              ["lbp"],
-    "LBP_MS":           ["lbp_ms"],
-    "CLBP":             ["clbp"],
-    "Gabor":            ["gabor"],
-    "GLCM":             ["glcm"],
+    # Feature singole
     "HOG":              ["hog"],
     "FFT":              ["fft"],
-    "Wavelet":          ["wavelet"],
     "Stats":            ["stats"],
     "Laws":             ["laws"],
-    "DSIFT":            ["dsift"],
-    "LBP+GLCM+Gabor":   ["lbp", "glcm", "gabor"],
-    "LBP_MS+GLCM+Gabor": ["lbp_ms", "glcm", "gabor"],
+    # Combinazioni fuse — le più performanti
     "Stats+GLCM+Gabor": ["stats", "glcm", "gabor"],
     "Stats+Laws+GLCM":  ["stats", "laws", "glcm"],
-    "All":              AVAILABLE_FEATURES,
+    "All":              ["gabor", "glcm", "hog", "fft", "stats", "laws"],
+    # Eliminate (mediana AUROC < 0.50, peggio del random su metà delle combinazioni):
+    #   CLBP (0.462), Gabor standalone (0.477), Wavelet (0.470)
+    #   LBP (0.469), LBP_MS (0.462), DSIFT (non coerente tra categorie)
+    #   LBP+GLCM+Gabor, LBP_MS+GLCM+Gabor, GLCM standalone
 }
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ────────────────────────────────────────────────────────────────────────────
-
-def _get_feature_dim_ranges(feature_names_list: list) -> dict:
-    """
-    Build a dict {group_name: column_slice} so we can slice the full
-    feature matrix by feature group.
-
-    We extract a dummy vector for each group to know its length.
-    """
-    dummy = np.zeros((256, 256), dtype=np.uint8)
-    slices = {}
-    for group_name, group_features in feature_names_list:
-        from feature_extraction import extract_features
-        single = extract_features(dummy, group_features)
-        slices[group_name] = len(single)
-    return slices
-
 
 def run_category(dataset_root: str, category: str,
                  feature_groups: dict,
@@ -115,22 +95,24 @@ def run_category(dataset_root: str, category: str,
     print(f"  Image size: {img_size[0]}x{img_size[1]}")
     print(f"{'='*60}")
 
-    # ── 1. Load ──────────────────────────────────────────────────────────────
+    # ── 1. Carica immagini dal dataset ────────────────────────────────────────
     t0 = time.time()
     X_train_raw, y_train, X_test_raw, y_test, meta = load_mvtec_category(
         dataset_root, category, img_size=img_size
     )
 
-    # ── 2. Preprocess ─────────────────────────────────────────────────────────
+    # ── 2. Preprocessing (denoising + contrast enhancement) ──────────────────
+    # L'ordine è critico: prima denoising poi enhancement.
+    # Se si fa il contrario si amplifica anche il rumore.
     print(f"[{category}] Preprocessing...")
     X_train_pp = preprocess_batch(X_train_raw, denoise=denoise, enhance=enhance)
     X_test_pp  = preprocess_batch(X_test_raw,  denoise=denoise, enhance=enhance)
 
-    # Cartella base per questa run (category/pp_tag)
+    # cartella dedicata a questa combinazione preprocessing (es. gaussian_clahe/)
     run_dir = os.path.join(out_dir, pp_tag)
     os.makedirs(run_dir, exist_ok=True)
 
-    # ── 2b. Save preprocessing comparison plot ──────────────────────────────
+    # salva un'immagine di confronto prima/dopo preprocessing per visualizzazione
     if len(X_train_raw) > 0:
         plot_preprocessing_comparison(
             X_train_raw[0], X_train_pp[0],
@@ -138,15 +120,16 @@ def run_category(dataset_root: str, category: str,
             out_path=os.path.join(run_dir, "preprocessing_comparison.png")
         )
 
-    # ── 3. Feature extraction per group ──────────────────────────────────────
-    # Build the full feature matrix (all features concatenated) once,
-    # then slice it per group for the experiment matrix.
-
+    # ── 3. Estrazione feature ─────────────────────────────────────────────────
+    # Strategia: estrae TUTTE le feature in un'unica matrice concatenata,
+    # poi ritaglia per gruppo con slicing di colonne.
+    # Questo evita di rieseguire i feature extractor per ogni gruppo.
     print(f"[{category}] Extracting features (all groups)...")
     X_train_full = extract_batch(X_train_pp, feature_names=AVAILABLE_FEATURES)
     X_test_full  = extract_batch(X_test_pp,  feature_names=AVAILABLE_FEATURES)
 
-    # Build column index ranges per group
+    # calcola i range di colonne per ogni feature usando un'immagine dummy
+    # (la dimensione del vettore dipende dalla feature, non dall'immagine)
     dummy = np.zeros((img_size[0], img_size[1]), dtype=np.uint8)
     col_start = 0
     feat_slices = {}
@@ -156,7 +139,7 @@ def run_category(dataset_root: str, category: str,
         feat_slices[feat_name] = (col_start, col_start + n_cols)
         col_start += n_cols
 
-    # Map group names to column arrays
+    # costruisce la mappa gruppo → indici di colonna nella matrice completa
     group_indices = {}
     for group_name, group_feats in feature_groups.items():
         cols = []
@@ -165,14 +148,15 @@ def run_category(dataset_root: str, category: str,
             cols.extend(range(s, e))
         group_indices[group_name] = cols
 
-    # ── 4. Experiment matrix — unsupervised ───────────────────────────────────
+    # ── 4. Matrice esperimenti — detector non supervisionati ──────────────────
+    # Filtra i detector richiesti (se vuoto, usa tutti)
     selected_detectors = {k: v for k, v in UNSUPERVISED_DETECTORS.items()
                           if k in detector_names or not detector_names}
 
-    # Convert to slice-friendly format for run_experiment_matrix
     feat_index_map = {name: np.array(cols) for name, cols in group_indices.items()}
 
-    # ── 3b. PCA scatter of full features ────────────────────────────────────
+    # scatter PCA per visualizzare la separabilità nello spazio delle feature
+    # fit solo su training (normali) per evitare data leakage nella visualizzazione
     plot_pca_scatter(
         X_train_full[y_train == 0], X_test_full, y_test,
         title=f"{category} — PCA Feature Space (all descriptors)",
@@ -182,19 +166,20 @@ def run_category(dataset_root: str, category: str,
     print(f"\n[{category}] Running unsupervised experiment matrix "
           f"({len(feat_index_map)} features × {len(selected_detectors)} detectors)...")
 
+    # esegue tutte le combinazioni feature × detector e restituisce DataFrame AUROC
     df_unsup = run_experiment_matrix(
-        X_train=X_train_full[y_train == 0],   # train on normal only
+        X_train=X_train_full[y_train == 0],   # addestra SOLO sui normali
         X_test=X_test_full,
         y_test=y_test,
         feature_sets=feat_index_map,
         detector_classes=selected_detectors,
         out_dir=run_dir,
     )
-    # Prefix con tag preprocessing — es. wood_gaussian_clahe_unsupervised
+    # nome file include il tag preprocessing per non sovrascrivere run diverse
     prefix = f"{category}_{pp_tag}_unsupervised"
     save_results(df_unsup, out_dir=run_dir, prefix=prefix)
 
-    # Salva anche metadati preprocessing
+    # file di metadati: ricorda con quali parametri è stato generato questo risultato
     meta_path = os.path.join(run_dir, f"{prefix}_meta.txt")
     with open(meta_path, "w") as f:
         f.write(f"category:   {category}\n")
@@ -205,9 +190,10 @@ def run_category(dataset_root: str, category: str,
     print(f"\n[{category}] Unsupervised AUROC matrix:")
     print(df_unsup.to_string())
 
-    # ── 5. Supervised baselines ───────────────────────────────────────────────
+    # ── 5. Baseline supervisionata ────────────────────────────────────────────
+    # MVTec ha solo normali nel training → skip quasi sempre.
+    # Viene eseguita solo se nel training ci sono anche etichette di difetto.
     if y_train.sum() == 0:
-        # Normal-only training set — skip supervised
         print(f"\n[{category}] Skipping supervised (no defect labels in train).")
     else:
         print(f"\n[{category}] Training supervised classifiers...")
@@ -264,6 +250,7 @@ def parse_args():
     p.add_argument("--out", default=os.path.join(_PROJECT_ROOT, "results"),
                    help="Output directory for results (default: results/)")
     p.add_argument("--img-size", type=int, default=256,
+                   choices=[128, 256, 512, 1024],
                    help="Resize images to this square size (default: 256)")
     p.add_argument("--denoise", default="gaussian",
                    choices=["gaussian", "median", "bilateral", "nlmeans",

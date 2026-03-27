@@ -55,6 +55,18 @@ class _PCAPreprocessor:
         return self.pca.transform(self.scaler.transform(X))
 
 
+class _ScalerOnly:
+    """Solo StandardScaler, senza PCA. Per detector tree-based (IF)."""
+    def __init__(self):
+        self.scaler = StandardScaler()
+
+    def fit_transform(self, X):
+        return self.scaler.fit_transform(X)
+
+    def transform(self, X):
+        return self.scaler.transform(X)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Generic sklearn-based detector (covers OC-SVM, IF, LOF, GMM, EE)
 # ────────────────────────────────────────────────────────────────────────────
@@ -62,19 +74,20 @@ class _PCAPreprocessor:
 class SklearnDetector:
     """
     Wraps any sklearn unsupervised model that provides a scoring function.
-    Applies StandardScaler + PCA before the model, and negates the sklearn
-    score so that higher = more anomalous.
+    Applies StandardScaler (+ PCA opzionale) before the model, and negates
+    the sklearn score so that higher = more anomalous.
 
     Parameters
     ----------
     model       : sklearn estimator instance (already configured)
     score_fn    : name of the scoring method ('score_samples' or 'decision_function')
     pca_variance: fraction of variance retained by PCA (default 0.95)
+    use_pca     : if False, apply only StandardScaler (for tree-based detectors)
     """
 
     def __init__(self, model, score_fn: str = "score_samples",
-                 pca_variance: float = 0.95):
-        self._pre = _PCAPreprocessor(pca_variance)
+                 pca_variance: float = 0.95, use_pca: bool = True):
+        self._pre = _PCAPreprocessor(pca_variance) if use_pca else _ScalerOnly()
         self._model = model
         self._score_fn = score_fn
         self._threshold = None
@@ -105,7 +118,8 @@ def _make_ocsvm():
 
 def _make_iforest():
     return SklearnDetector(
-        _IF(n_estimators=200, contamination="auto", random_state=42, n_jobs=-1))
+        _IF(n_estimators=200, contamination="auto", random_state=42, n_jobs=-1),
+        use_pca=False)  # tree-based: non serve PCA, basta scaler
 
 def _make_lof():
     return SklearnDetector(
