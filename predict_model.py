@@ -2,21 +2,16 @@
 """
 predict_model.py
 ----------------
-Dato un'immagine, dice se la superficie è NORMALE o DIFETTOSA.
+Predict whether a surface image is normal or defective.
 
-Il modello migliore dai nostri esperimenti:
-    Features : Statistical Moments  (gradiente Sobel: media, std, skew, kurt)
-    Detector : Isolation Forest
-    AUROC    : 0.9316 su wood
+On first run the model is trained from the dataset and cached in models/.
+Subsequent runs load the cached model in under a second.
 
-Al primo avvio addestra il modello dal dataset e lo salva in models/.
-Dai avvii successivi carica il modello già addestrato (< 1 secondo).
-
-Uso
----
-    python predict_model.py immagine.png
-    python predict_model.py immagine.png --category tile
-    python predict_model.py immagine.png --category wood --retrain
+Usage
+-----
+    python predict_model.py image.png
+    python predict_model.py image.png --category tile
+    python predict_model.py image.png --category wood --retrain
 """
 
 import argparse
@@ -28,18 +23,18 @@ import numpy as np
 import cv2
 import joblib
 import matplotlib
-matplotlib.use("TkAgg")          # usa finestra desktop
+matplotlib.use("TkAgg")          # interactive desktop window
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-# ── moduli del progetto ───────────────────────────────────────────────────────
+# project modules
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from preprocessing      import preprocess
 from feature_extraction import extract_features
 from dataset            import load_mvtec_category
 from models             import UNSUPERVISED_DETECTORS
 
-# ── costanti ──────────────────────────────────────────────────────────────────
+# constants
 _PROJECT_ROOT = Path(__file__).resolve().parent
 DATASET_ROOT = _PROJECT_ROOT / "dataset"
 MODELS_DIR   = _PROJECT_ROOT / "models"
@@ -49,7 +44,7 @@ DENOISE     = "gaussian"
 ENHANCE     = "clahe"
 IMG_SIZE    = (256, 256)
 
-# Mappa nomi CSV → nomi feature_extraction
+# map CSV feature-group names to feature_extraction keys
 _FEAT_GROUP_MAP = {
     "Gabor": ["gabor"], "GLCM": ["glcm"], "HOG": ["hog"],
     "FFT": ["fft"], "Stats": ["stats"], "Laws": ["laws"],
@@ -61,24 +56,23 @@ _FEAT_GROUP_MAP = {
 
 def _find_best_combo(category: str) -> tuple:
     """
-    Legge il CSV generato da pipeline.py e trova la combo
-    feature+detector con AUROC massimo per la categoria.
-    Restituisce (feature_list, detector_name, auroc).
-    Se il CSV non esiste, esce con errore.
+    Read the AUROC CSV produced by pipeline.py and return the best
+    (feature_list, detector_name, auroc) combination for the category.
+    Exits with an error if no CSV is found.
     """
     unsup_dir = _PROJECT_ROOT / "results" / category / "unsupervised"
 
     cat_dir = _PROJECT_ROOT / "results" / category
 
-    # Raccoglie tutti i CSV da tutte le sottocartelle (es. gaussian_clahe/, nlmeans_clahe/)
+    # collect all AUROC CSVs across preprocessing sub-directories
     all_csvs = list(cat_dir.glob(f"**/{category}_*auroc.csv"))
 
     if not all_csvs:
-        sys.exit(f"Errore: CSV non trovato per '{category}'.\n"
-                 f"  Cartella: {cat_dir}\n"
-                 f"  Lancia prima: python pipeline.py --dataset dataset --category {category}")
+        sys.exit(f"Error: no AUROC CSV found for '{category}'.\n"
+                 f"  Directory: {cat_dir}\n"
+                 f"  Run first: python pipeline.py --dataset dataset --category {category}")
 
-    # Sceglie il CSV con AUROC massimo tra tutti i disponibili
+    # pick the CSV with the highest peak AUROC
     import pandas as pd
     best_csv = None
     best_global_auroc = -1.0
@@ -97,12 +91,12 @@ def _find_best_combo(category: str) -> tuple:
             continue
 
     csv_path = best_csv
-    print(f"[auto] Miglior CSV trovato: {csv_path.name} (AUROC max={best_global_auroc:.4f})")
+    print(f"[auto] Best CSV found: {csv_path.name} (peak AUROC={best_global_auroc:.4f})")
 
     import pandas as pd
     df = pd.read_csv(csv_path, index_col=0)
 
-    # Trova la cella con AUROC massimo (esclude PCANullSubspace)
+    # find the cell with the highest AUROC (PCANullSubspace excluded — needs fit params)
     valid_detectors = [c for c in df.columns if c in UNSUPERVISED_DETECTORS
                        and c != "PCANullSubspace"]
     df_valid = df[valid_detectors]
@@ -123,18 +117,16 @@ def _find_best_combo(category: str) -> tuple:
     return feat_list, best_det, best_auroc
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Training & salvataggio modello
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Training ──────────────────────────────────────────────────────────────────
 
 def train_and_save(category: str, features: list = None,
                    detector_name: str = None) -> dict:
     """
-    Addestra il modello sulla categoria indicata e lo salva su disco.
-    Usa lo STESSO SklearnDetector di models.py (identico a pipeline).
-    Restituisce il bundle {detector, features, ...}.
+    Train the best detector for a category and cache it to disk.
+    Uses the same SklearnDetector pipeline as pipeline.py.
+    Returns the serialised bundle {detector, features, ...}.
     """
-    # Scegli combo migliore dal CSV se non specificata
+    # auto-select best combo from CSV when not explicitly specified
     if features is None or detector_name is None:
         auto_feat, auto_det, auto_auroc = _find_best_combo(category)
         features = features or auto_feat
@@ -145,28 +137,24 @@ def train_and_save(category: str, features: list = None,
         str(DATASET_ROOT), category, img_size=IMG_SIZE
     )
 
-    # solo immagini normali (y_train == 0)
     X_normal = X_raw[y_train == 0]
-    print(f"[train] {len(X_normal)} immagini normali trovate")
+    print(f"[train] {len(X_normal)} normal images found")
 
-    # preprocessing
     print("[train] Preprocessing...")
     from preprocessing import preprocess_batch
     X_pp = preprocess_batch(X_normal, denoise=DENOISE, enhance=ENHANCE)
 
-    # feature extraction
     feat_label = "+".join(f.upper() for f in features)
-    print(f"[train] Estrazione feature ({feat_label})...")
+    print(f"[train] Extracting features ({feat_label})...")
     X_feat = np.vstack([extract_features(img, features) for img in X_pp])
     print(f"[train] Feature shape: {X_feat.shape}")
 
-    # Usa la STESSA factory di models.py (SklearnDetector con scaler+PCA interni)
     detector_factory = UNSUPERVISED_DETECTORS[detector_name]
     detector = detector_factory()
     print(f"[train] Detector: {detector_name}")
-    detector.fit(X_feat)    # SklearnDetector fa scaler+PCA+fit internamente
+    detector.fit(X_feat)
 
-    # Score sui normali di training (higher = more anomalous, gia' negato)
+    # score range on training normals — used for [0,1] normalisation at predict time
     train_scores = detector.score_samples(X_feat)
     score_min    = float(train_scores.min())
     score_max    = float(train_scores.max())
@@ -178,63 +166,59 @@ def train_and_save(category: str, features: list = None,
 
     path = MODELS_DIR / f"{category}_best.pkl"
     joblib.dump(bundle, path)
-    print(f"[train] Modello salvato -> {path}\n")
+    print(f"[train] Model saved -> {path}\n")
     return bundle
 
 
 def load_model(category: str) -> dict:
+    """Load cached model from disk, training it first if not found."""
     path = MODELS_DIR / f"{category}_best.pkl"
     if not path.exists():
         return train_and_save(category)
-    print(f"[model] Carico modello da {path}")
+    print(f"[model] Loading model from {path}")
     return joblib.load(path)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Predizione su singola immagine
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Prediction ────────────────────────────────────────────────────────────────
 
 def predict(image_path: str, bundle: dict) -> dict:
     """
-    Preprocessa l'immagine, estrae le feature e restituisce:
-        score      : anomaly score normalizzato in [0, 1]  (1 = anomalia certa)
-        raw_score  : score grezzo di IsolationForest
-        label      : "NORMALE" o "DIFETTOSO"
-        confidence : percentuale di sicurezza
+    Preprocess an image, extract features, and return an anomaly verdict.
+
+    Returns a dict with:
+        score      : normalised anomaly score in [0, 1]  (1 = certain anomaly)
+        raw_score  : raw detector score
+        label      : "NORMALE" or "DIFETTOSO"
+        confidence : confidence percentage
     """
-    # carica e pre-processa
     img_bgr = cv2.imread(image_path)
     if img_bgr is None:
-        sys.exit(f"Errore: impossibile leggere '{image_path}'")
+        sys.exit(f"Error: cannot read '{image_path}'")
 
     img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     img_gray = cv2.resize(img_gray, IMG_SIZE)
     img_pp   = preprocess(img_gray, denoise=DENOISE, enhance=ENHANCE)
 
-    # feature
     feat = extract_features(img_pp, bundle["features"]).reshape(1, -1)
 
-    # Score via SklearnDetector (scaler+PCA+detector tutto interno, higher=more anomalous)
     detector = bundle["detector"]
     raw_score = float(detector.score_samples(feat)[0])
     thr       = float(detector._threshold)
     s_min     = bundle["score_min"]
     s_max     = bundle["score_max"]
 
-    # Classificazione: score >= threshold → anomalo
+    # Classification: score >= threshold → anomalous
     is_defect = raw_score >= thr
     label     = "DIFETTOSO" if is_defect else "NORMALE"
 
-    # Normalizzazione: soglia = 0.5, scala basata sul range training
-    # Cosi' anche score fuori dal range training vengono rappresentati
+    # Normalisation: threshold maps to 0.5, scale based on training range
     span = max(s_max - s_min, 1e-9)
     norm_score = 0.5 + (raw_score - thr) / (2.0 * span)
     norm_score = float(np.clip(norm_score, 0.0, 1.0))
 
-    # Soglia normalizzata = sempre 0.5
-    thr_norm = 0.5
+    thr_norm = 0.5  # threshold always maps to 0.5 in normalised space
 
-    # Confidenza: distanza dalla soglia
+    # confidence: distance from threshold scaled to [50%, 99%]
     dist = abs(raw_score - thr) / (span + 1e-9)
     confidence = float(np.clip(50 + dist * 100, 50, 99))
 
@@ -255,14 +239,11 @@ def predict(image_path: str, bundle: dict) -> dict:
     )
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Output visivo
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Visualisation ────────────────────────────────────────────────────────────
 
 def show_result(res: dict):
-    """Stampa il risultato a terminale e apre una finestra grafica."""
+    """Print the result to terminal and open a matplotlib gauge window."""
 
-    # ── stampa terminale ──────────────────────────────────────────────────────
     color  = "\033[91m" if res["is_defect"] else "\033[92m"
     reset  = "\033[0m"
     symbol = "[X]" if res["is_defect"] else "[OK]"
@@ -294,7 +275,7 @@ def show_result(res: dict):
     ax_img.axis("off")
     ax_img.set_facecolor(BG)
 
-    # bordo colorato: rettangolo attorno all'immagine
+    # coloured border around the image panel
     rect = mpatches.FancyBboxPatch(
         (-0.5, -0.5),
         res["img_pp"].shape[1] - 0.5, res["img_pp"].shape[0] - 0.5,
@@ -304,7 +285,7 @@ def show_result(res: dict):
     )
     ax_img.add_patch(rect)
 
-    # ── pannello destro: gauge ────────────────────────────────────────────────
+    # right panel: anomaly gauge
     ax = axes[1]
     ax.set_facecolor(BG)
     ax.set_xlim(0, 1)
@@ -315,12 +296,12 @@ def show_result(res: dict):
     sc   = res["norm_score"]
     emoji = "DIFETTOSO" if res["is_defect"] else "NORMALE"
 
-    # -- etichetta risultato (in alto) ----------------------------------------
+    # verdict label
     ax.text(0.5, 9.2, emoji,
             ha="center", va="center",
             fontsize=24, fontweight="bold", color=bar_color)
 
-    # -- score e confidenza (zona centrale) ------------------------------------
+    # score and confidence text
     ax.text(0.5, 7.9,
             f"Anomaly score:  {sc:.3f}",
             ha="center", va="center",
@@ -331,29 +312,22 @@ def show_result(res: dict):
             ha="center", va="center",
             fontsize=11, color="#aaaaaa")
 
-    # -- barra gauge (zona bassa) -----------------------------------------------
-    BAR_Y = 4.8          # centro barra in coordinata dati
-    BAR_H = 1.2          # altezza barra
+    # gauge bar
+    BAR_Y = 4.8
+    BAR_H = 1.2
 
-    # sfondo barra (grigio scuro)
     ax.barh(BAR_Y, 1.0, height=BAR_H, color="#2a2a44", left=0, zorder=2)
-
-    # zona "normale" (verde tenue) fino alla soglia
     ax.barh(BAR_Y, thr, height=BAR_H, color="#1a3a2a", left=0, zorder=3)
-
-    # zona "difettoso" (rossa tenue) oltre la soglia
     ax.barh(BAR_Y, 1.0 - thr, height=BAR_H, color="#3a1a1a", left=thr, zorder=3)
-
-    # barra score colorata (sopra lo sfondo)
     ax.barh(BAR_Y, sc, height=BAR_H * 0.55,
             color=bar_color, left=0, zorder=4, alpha=0.95)
 
-    # linea soglia (gialla tratteggiata)
+    # threshold marker
     half_h = BAR_H * 0.65
     ax.plot([thr, thr], [BAR_Y - half_h, BAR_Y + half_h],
             color="#ffdd00", linestyle="--", linewidth=2.5, zorder=5)
 
-    # etichette scala: 0 / soglia / 1
+    # scale labels: 0 / threshold / 1
     label_y = BAR_Y - BAR_H * 0.85
     ax.text(0.0,  label_y, "0",          ha="center", va="top",
             fontsize=9, color="#777799")
@@ -362,11 +336,11 @@ def show_result(res: dict):
     ax.text(1.0,  label_y, "1",          ha="center", va="top",
             fontsize=9, color="#777799")
 
-    # indicatore triangolare sulla barra (posizione score)
+    # score position indicator
     ax.plot(sc, BAR_Y + BAR_H * 0.58, marker="v",
             color="white", markersize=9, zorder=6)
 
-    # separatore orizzontale tra testo e barra
+    # horizontal separator between text and gauge
     ax.axhline(6.2, color="#333355", linewidth=1, xmin=0.02, xmax=0.98)
 
     fig.suptitle(
@@ -376,10 +350,10 @@ def show_result(res: dict):
     )
     plt.tight_layout(pad=1.5)
 
-    # salva come file — nome: materiale_difetto_num.png
+    # save figure — name: category_defecttype_stem.png
     img_path = Path(res['image_path']).resolve()
     category = res['category']
-    # prova a estrarre il tipo difetto dal percorso (es. dataset/tile/test/rough/001.png)
+    # extract defect type from path (e.g. dataset/tile/test/rough/001.png)
     defect_type = "unknown"
     parts = img_path.parts
     for i, part in enumerate(parts):
@@ -391,7 +365,7 @@ def show_result(res: dict):
     out_path.parent.mkdir(exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight",
                 facecolor=fig.get_facecolor())
-    print(f"Risultato salvato → {out_path}")
+    print(f"Result saved → {out_path}")
 
     plt.show()
 
@@ -402,9 +376,8 @@ def show_result(res: dict):
 
 def _guess_category(image_path: str) -> str:
     """
-    Deduce la categoria MVTec dal percorso dell'immagine.
-    Es: 'dataset/tile/test/rough/001.png' → 'tile'
-        '/home/.../dataset/wood/test/good/003.png' → 'wood'
+    Infer the MVTec category from the image path.
+    E.g. 'dataset/tile/test/rough/001.png' → 'tile'
     """
     known = {"wood", "tile", "grid", "hazelnut", "carpet", "leather"}
     parts = Path(image_path).resolve().parts
@@ -415,64 +388,60 @@ def _guess_category(image_path: str) -> str:
 
 
 def train_all_categories():
-    """Addestra e salva il modello migliore per ogni categoria."""
+    """Train and save the best model for every category."""
     categories = ["wood", "tile", "grid", "hazelnut", "carpet", "leather"]
     for cat in categories:
         cat_dir = DATASET_ROOT / cat
         if not cat_dir.exists():
-            print(f"[skip] {cat} — cartella non trovata")
+            print(f"[skip] {cat} — directory not found")
             continue
         print(f"\n{'='*50}")
         print(f"  {cat.upper()}")
         print(f"{'='*50}")
         train_and_save(cat)
-    print("\n[done] Tutti i modelli salvati in", MODELS_DIR)
+    print("\n[done] All models saved to", MODELS_DIR)
 
 
 def main():
     p = argparse.ArgumentParser(
-        description="Predice se una superficie è normale o difettosa."
+        description="Predict whether a surface image is normal or defective."
     )
     p.add_argument("image", nargs="?", default=None,
-                   help="Percorso dell'immagine da analizzare")
+                   help="Path to the image to analyse")
     p.add_argument("--category", default=None,
                    choices=["wood", "tile", "grid", "hazelnut", "carpet", "leather"],
-                   help="Categoria MVTec (se omesso, la deduce dal percorso)")
+                   help="MVTec category (inferred from path if omitted)")
     p.add_argument("--retrain", action="store_true",
-                   help="Forza il ri-addestramento anche se il modello esiste")
+                   help="Force retraining even if a saved model exists")
     p.add_argument("--train-all", action="store_true",
-                   help="Addestra e salva il modello migliore per ogni categoria")
+                   help="Train and save the best model for every category")
     args = p.parse_args()
 
-    # Modalita' addestra tutto
     if args.train_all:
         train_all_categories()
         return
 
     if args.image is None:
-        p.error("serve il percorso dell'immagine (oppure usa --train-all)")
+        p.error("image path required (or use --train-all)")
 
     if not Path(args.image).exists():
-        sys.exit(f"Errore: file '{args.image}' non trovato.")
+        sys.exit(f"Error: file '{args.image}' not found.")
 
-    # deduce categoria dal path se non specificata
+    # infer category from path if not specified
     category = args.category or _guess_category(args.image)
     if category is None:
-        sys.exit("Errore: impossibile dedurre la categoria dal percorso. "
-                 "Usa --category <nome>.")
-    print(f"[info] Categoria: {category}")
+        sys.exit("Error: cannot infer category from path. Use --category <name>.")
+    print(f"[info] Category: {category}")
 
-    # carica (o addestra) il modello
+    # load (or train) the model
     model_path = MODELS_DIR / f"{category}_best.pkl"
     if args.retrain and model_path.exists():
         model_path.unlink()
 
     bundle = load_model(category)
 
-    # predizione
     res = predict(args.image, bundle)
 
-    # output
     show_result(res)
 
 

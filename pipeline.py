@@ -47,18 +47,18 @@ from evaluate import (
 # "fused" uses all features concatenated.
 
 FEATURE_GROUPS = {
-    # Feature singole
+    # Single-descriptor groups
     "HOG":              ["hog"],
     "FFT":              ["fft"],
     "Stats":            ["stats"],
     "Laws":             ["laws"],
-    # Combinazioni fuse — le più performanti
+    # Fused combinations — best performing
     "Stats+GLCM+Gabor": ["stats", "glcm", "gabor"],
     "Stats+Laws+GLCM":  ["stats", "laws", "glcm"],
     "All":              ["gabor", "glcm", "hog", "fft", "stats", "laws"],
-    # Eliminate (mediana AUROC < 0.50, peggio del random su metà delle combinazioni):
+    # Dropped (median AUROC < 0.50, worse than random on half the detector combinations):
     #   CLBP (0.462), Gabor standalone (0.477), Wavelet (0.470)
-    #   LBP (0.469), LBP_MS (0.462), DSIFT (non coerente tra categorie)
+    #   LBP (0.469), LBP_MS (0.462), DSIFT (inconsistent across categories)
     #   LBP+GLCM+Gabor, LBP_MS+GLCM+Gabor, GLCM standalone
 }
 
@@ -84,7 +84,7 @@ def run_category(dataset_root: str, category: str,
     5. Run supervised baselines
     6. Save all results
     """
-    # Suffisso preprocessing per distinguere i risultati di run diverse
+    # Preprocessing tag — distinguishes result directories across runs
     pp_tag = f"{denoise or 'none'}_{enhance or 'none'}"
     out_dir = os.path.join(out_root, category)
     os.makedirs(out_dir, exist_ok=True)
@@ -95,24 +95,23 @@ def run_category(dataset_root: str, category: str,
     print(f"  Image size: {img_size[0]}x{img_size[1]}")
     print(f"{'='*60}")
 
-    # ── 1. Carica immagini dal dataset ────────────────────────────────────────
+    # ── 1. Load images ────────────────────────────────────────────────────────
     t0 = time.time()
     X_train_raw, y_train, X_test_raw, y_test, meta = load_mvtec_category(
         dataset_root, category, img_size=img_size
     )
 
     # ── 2. Preprocessing (denoising + contrast enhancement) ──────────────────
-    # L'ordine è critico: prima denoising poi enhancement.
-    # Se si fa il contrario si amplifica anche il rumore.
+    # Order matters: denoise first, then enhance — reversing amplifies noise.
     print(f"[{category}] Preprocessing...")
     X_train_pp = preprocess_batch(X_train_raw, denoise=denoise, enhance=enhance)
     X_test_pp  = preprocess_batch(X_test_raw,  denoise=denoise, enhance=enhance)
 
-    # cartella dedicata a questa combinazione preprocessing (es. gaussian_clahe/)
+    # sub-directory for this preprocessing combination (e.g. gaussian_clahe/)
     run_dir = os.path.join(out_dir, pp_tag)
     os.makedirs(run_dir, exist_ok=True)
 
-    # salva un'immagine di confronto prima/dopo preprocessing per visualizzazione
+    # save a before/after preprocessing comparison image
     if len(X_train_raw) > 0:
         plot_preprocessing_comparison(
             X_train_raw[0], X_train_pp[0],
@@ -120,16 +119,15 @@ def run_category(dataset_root: str, category: str,
             out_path=os.path.join(run_dir, "preprocessing_comparison.png")
         )
 
-    # ── 3. Estrazione feature ─────────────────────────────────────────────────
-    # Strategia: estrae TUTTE le feature in un'unica matrice concatenata,
-    # poi ritaglia per gruppo con slicing di colonne.
-    # Questo evita di rieseguire i feature extractor per ogni gruppo.
+    # ── 3. Feature extraction ─────────────────────────────────────────────────
+    # Extract ALL features into one concatenated matrix, then slice by group.
+    # This avoids re-running the extractors for each feature group.
     print(f"[{category}] Extracting features (all groups)...")
     X_train_full = extract_batch(X_train_pp, feature_names=AVAILABLE_FEATURES)
     X_test_full  = extract_batch(X_test_pp,  feature_names=AVAILABLE_FEATURES)
 
-    # calcola i range di colonne per ogni feature usando un'immagine dummy
-    # (la dimensione del vettore dipende dalla feature, non dall'immagine)
+    # compute column ranges per feature using a dummy image
+    # (vector length depends on the extractor, not on image content)
     dummy = np.zeros((img_size[0], img_size[1]), dtype=np.uint8)
     col_start = 0
     feat_slices = {}
@@ -139,7 +137,7 @@ def run_category(dataset_root: str, category: str,
         feat_slices[feat_name] = (col_start, col_start + n_cols)
         col_start += n_cols
 
-    # costruisce la mappa gruppo → indici di colonna nella matrice completa
+    # build group → column-index map into the full feature matrix
     group_indices = {}
     for group_name, group_feats in feature_groups.items():
         cols = []
@@ -148,15 +146,15 @@ def run_category(dataset_root: str, category: str,
             cols.extend(range(s, e))
         group_indices[group_name] = cols
 
-    # ── 4. Matrice esperimenti — detector non supervisionati ──────────────────
-    # Filtra i detector richiesti (se vuoto, usa tutti)
+    # ── 4. Experiment matrix — unsupervised detectors ────────────────────────
+    # Filter to requested detectors; empty list means use all.
     selected_detectors = {k: v for k, v in UNSUPERVISED_DETECTORS.items()
                           if k in detector_names or not detector_names}
 
     feat_index_map = {name: np.array(cols) for name, cols in group_indices.items()}
 
-    # scatter PCA per visualizzare la separabilità nello spazio delle feature
-    # fit solo su training (normali) per evitare data leakage nella visualizzazione
+    # PCA scatter — visualise separability in feature space
+    # fit on training normals only to avoid data leakage in the projection
     plot_pca_scatter(
         X_train_full[y_train == 0], X_test_full, y_test,
         title=f"{category} — PCA Feature Space (all descriptors)",
@@ -166,20 +164,20 @@ def run_category(dataset_root: str, category: str,
     print(f"\n[{category}] Running unsupervised experiment matrix "
           f"({len(feat_index_map)} features × {len(selected_detectors)} detectors)...")
 
-    # esegue tutte le combinazioni feature × detector e restituisce DataFrame AUROC
+    # run all feature × detector combinations; returns AUROC DataFrame
     df_unsup = run_experiment_matrix(
-        X_train=X_train_full[y_train == 0],   # addestra SOLO sui normali
+        X_train=X_train_full[y_train == 0],   # train on normal samples only
         X_test=X_test_full,
         y_test=y_test,
         feature_sets=feat_index_map,
         detector_classes=selected_detectors,
         out_dir=run_dir,
     )
-    # nome file include il tag preprocessing per non sovrascrivere run diverse
+    # filename includes the preprocessing tag to avoid overwriting different runs
     prefix = f"{category}_{pp_tag}_unsupervised"
     save_results(df_unsup, out_dir=run_dir, prefix=prefix)
 
-    # file di metadati: ricorda con quali parametri è stato generato questo risultato
+    # metadata file: records the run parameters for reproducibility
     meta_path = os.path.join(run_dir, f"{prefix}_meta.txt")
     with open(meta_path, "w") as f:
         f.write(f"category:   {category}\n")
@@ -190,9 +188,9 @@ def run_category(dataset_root: str, category: str,
     print(f"\n[{category}] Unsupervised AUROC matrix:")
     print(df_unsup.to_string())
 
-    # ── 5. Baseline supervisionata ────────────────────────────────────────────
-    # MVTec ha solo normali nel training → skip quasi sempre.
-    # Viene eseguita solo se nel training ci sono anche etichette di difetto.
+    # ── 5. Supervised baseline ────────────────────────────────────────────────
+    # MVTec training sets contain only normal images → usually skipped.
+    # Runs only when defect labels are present in the training split.
     if y_train.sum() == 0:
         print(f"\n[{category}] Skipping supervised (no defect labels in train).")
     else:

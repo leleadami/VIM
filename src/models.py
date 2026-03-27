@@ -56,7 +56,7 @@ class _PCAPreprocessor:
 
 
 class _ScalerOnly:
-    """Solo StandardScaler, senza PCA. Per detector tree-based (IF)."""
+    """StandardScaler only, no PCA. Used for tree-based detectors (IsolationForest)."""
     def __init__(self):
         self.scaler = StandardScaler()
 
@@ -74,7 +74,7 @@ class _ScalerOnly:
 class SklearnDetector:
     """
     Wraps any sklearn unsupervised model that provides a scoring function.
-    Applies StandardScaler (+ PCA opzionale) before the model, and negates
+    Applies StandardScaler (+ optional PCA) before the model, and negates
     the sklearn score so that higher = more anomalous.
 
     Parameters
@@ -119,7 +119,7 @@ def _make_ocsvm():
 def _make_iforest():
     return SklearnDetector(
         _IF(n_estimators=200, contamination="auto", random_state=42, n_jobs=-1),
-        use_pca=False)  # tree-based: non serve PCA, basta scaler
+        use_pca=False)  # tree-based: axis-aligned splits work best without PCA rotation
 
 def _make_lof():
     return SklearnDetector(

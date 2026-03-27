@@ -1,100 +1,54 @@
 """
 preprocessing.py
 ----------------
-Image denoising and contrast enhancement utilities.
+Image denoising and contrast enhancement.
 All functions accept and return grayscale uint8 numpy arrays.
 
-Denoising methods:
-  - Gaussian, Median, Bilateral (basic)
-  - Non-Local Means (NLMeans) — edge-preserving, effective at high SNR
-  - Wavelet thresholding (BayesShrink) — preserves texture edges at low SNR
-  - NLMeans + Wavelet (RCLBP approach) — robust combination from
-    Gyimah et al. (2021), arXiv:2112.04021
-"""
+Pipeline: denoise → enhance (order matters — denoising before contrast
+enhancement avoids amplifying noise along with texture).
 
-"""
-1. Denoising — rimuove il rumore dall'immagine (6 metodi)
-  2. Contrast enhancement — migliora la visibilità della texture (2 metodi)
-
-  immagine grezza
-        ↓
-    denoising       ← rimuove rumore
-        ↓
-    enhancement     ← aumenta contrasto
-        ↓
-  immagine pronta per feature extraction
-
-  L'ordine è importante: prima denoisi, poi amplifichi il contrasto — se facessi il
-  contrario amplificheresti anche il rumore.
+Denoising options : gaussian | median | bilateral | nlmeans | wavelet | rclbp
+Enhancement options: clahe | histeq
 """
 
 import cv2
 import numpy as np
-import pywt # PyWavelets for wavelet transforms in wavelet_denoise()
+import pywt
 
 
-# ── Denoising ───────────────────────────────────────────────────────────────
+# ── Denoising ────────────────────────────────────────────────────────────────
 
 def gaussian_denoise(img: np.ndarray, ksize: int = 5, sigma: float = 1.0) -> np.ndarray:
-    """Gaussian low-pass filter for additive Gaussian noise."""
+    """Gaussian low-pass filter. Fast default for mild additive noise."""
     return cv2.GaussianBlur(img, (ksize, ksize), sigma)
-
-"""
-Applica un filtro gaussiano — ogni pixel diventa la media pesata dei suoi vicini,
-  dove i pesi seguono una campana gaussiana. ksize=5 = kernel 5x5 pixel. sigma=1.0 =
-  quanto è larga la campana.
-
-  Effetto: sfoca leggermente l'immagine, riduce rumore casuale pixel per pixel. Il più
-  semplice e veloce dei 6 metodi — per questo lo usiamo come default.
-"""
 
 
 def median_denoise(img: np.ndarray, ksize: int = 3) -> np.ndarray:
-    """Median filter — robust to salt-and-pepper noise."""
+    """Median filter. Robust to salt-and-pepper noise; preserves edges."""
     return cv2.medianBlur(img, ksize)
-
-"""
-Ogni pixel viene sostituito con la mediana dei suoi vicini in un intorno ksize×ksize.
-   La mediana è robusta agli outlier — un pixel completamente bianco (sale) o nero
-  (pepe) sparisce perché la mediana lo ignora.
-
-  Effetto: ottimo per rumore salt-and-pepper (pixel isolati bianchi/neri), preserva i
-  bordi meglio del gaussiano.
-"""
 
 
 def bilateral_denoise(img: np.ndarray, d: int = 9,
                       sigma_color: float = 75, sigma_space: float = 75) -> np.ndarray:
-    """Bilateral filter — edge-preserving smoothing."""
+    """Bilateral filter — smooths flat regions while preserving edges."""
     return cv2.bilateralFilter(img, d, sigma_color, sigma_space)
-"""
-Come il gaussiano ma con due pesi: uno spaziale (distanza dal pixel) e uno di
-  intensità (differenza di colore). Pixel vicini ma con intensità molto diversa (=
-  bordi) vengono ignorati.
-
-  - sigma_color=75 — pixel con differenza >75 livelli di grigio non contribuiscono
-  - sigma_space=75 — raggio spaziale di influenza
-
-  Effetto: sfoca le zone piatte ma preserva i bordi — il migliore per immagini con
-  strutture nette.
-"""
 
 
 def nlmeans_denoise(img: np.ndarray, h: float = 10,
                     template_window: int = 7,
                     search_window: int = 21) -> np.ndarray:
     """
-    Non-Local Means denoising (cv2.fastNlMeansDenoising).
+    Non-Local Means denoising (Buades et al., 2005).
 
-    Preserves edges and texture structure better than Gaussian/median
-    at moderate noise levels. Key building block of the RCLBP framework
-    (Gyimah et al., 2021).
+    Weights each pixel as a weighted average of similar patches in a
+    search window. Better texture preservation than Gaussian or median
+    at the cost of higher runtime.
 
     Parameters
     ----------
-    h               : filter strength (higher = more denoising, less detail)
-    template_window : size of template patch (should be odd)
-    search_window   : size of the search area (should be odd)
+    h               : filter strength (higher = more smoothing, less detail)
+    template_window : patch size for similarity comparison (odd)
+    search_window   : search area radius (odd)
     """
     return cv2.fastNlMeansDenoising(img, None, h,
                                      template_window, search_window)
@@ -105,42 +59,20 @@ def wavelet_denoise(img: np.ndarray, wavelet: str = "db4",
     """
     Wavelet-domain denoising with BayesShrink adaptive thresholding.
 
-    Decomposes the image into wavelet sub-bands, estimates a noise-adaptive
-    threshold for each detail sub-band using the BayesShrink rule:
-        T = sigma^2 / sigma_x
-    where sigma is the noise standard deviation (estimated from the finest
-    HH sub-band via the Median Absolute Deviation) and sigma_x is the
-    signal standard deviation in each sub-band.
+    Estimates noise sigma from the finest HH sub-band via MAD, then
+    applies a per-sub-band soft threshold:
+        T = sigma_noise^2 / sigma_signal
 
-    Reference: Chang, Yu, Vetterli — "Adaptive wavelet thresholding for
-    image denoising and compression", IEEE TIP, 2000.
+    Reference: Chang, Yu, Vetterli — IEEE TIP 2000.
     """
     img_f = img.astype(np.float64)
     coeffs = pywt.wavedec2(img_f, wavelet=wavelet, level=level)
 
-    """
-    Decompone l'immagine in sotto-bande. Con level=3 la lista è:
-
-  coeffs[0]  → approssimazione LL   ← immagine sfocata, bassa frequenza
-  coeffs[1]  → dettagli livello 3   ← bassa frequenza, strutture grandi tupla (LH, HL, HH)
-  coeffs[2]  → dettagli livello 2   ← media frequenza tupla (LH, HL, HH)
-  coeffs[3]  → dettagli livello 1   ← ALTA frequenza, dettagli fini tupla (LH, HL, HH)
-
-  Importante: l'ordine è invertito — il livello 1 (più fine) è in fondo alla lista.
-  Ogni elemento coeffs[1:] è una tupla di 3 sotto-bande: (LH, HL, HH) = bordi
-  orizzontali, verticali, diagonali.
-
-"""
-
-    # Estimate noise sigma from the finest HH sub-band (MAD estimator)
+    # noise estimate from finest diagonal sub-band (robust to outliers)
     detail_coeffs = coeffs[-1]
     sigma_noise = np.median(np.abs(detail_coeffs[2])) / 0.6745
-    # HH = detail_coeffs[2] (diagonali)
-    # 0.6745 = costante matematica che converte la mediana in stima della deviazione standard
-    # sigma_noise = stima di quanto rumore c'è nell'immagine
 
-    # Apply BayesShrink to each detail sub-band
-    new_coeffs = [coeffs[0]]  # keep approximation unchanged
+    new_coeffs = [coeffs[0]]  # keep approximation sub-band unchanged
     for detail in coeffs[1:]:
         new_detail = []
         for subband in detail:
@@ -158,7 +90,6 @@ def wavelet_denoise(img: np.ndarray, wavelet: str = "db4",
         new_coeffs.append(tuple(new_detail))
 
     reconstructed = pywt.waverec2(new_coeffs, wavelet=wavelet)
-    # Clip and convert back to uint8
     return np.clip(reconstructed[:img.shape[0], :img.shape[1]],
                    0, 255).astype(np.uint8)
 
@@ -168,27 +99,24 @@ def rclbp_denoise(img: np.ndarray, h: float = 10,
     """
     RCLBP denoising: NLMeans + wavelet thresholding (Gyimah et al., 2021).
 
-    1. Apply NLMeans to get I_F (filtered image).
-    2. Compute method noise MN = V - I_F (lost textures/edges).
-    3. Wavelet-threshold MN to recover clean texture detail D_hat.
-    4. Return B = I_F + D_hat (denoised with restored edges).
+    1. Apply NLMeans → I_F
+    2. Compute method noise MN = V - I_F  (edges/texture discarded by NLM)
+    3. Wavelet-threshold MN → clean detail D_hat
+    4. Reconstruct B = I_F + D_hat
 
-    This combination is robust: NLMeans removes bulk noise while wavelet
-    thresholding recovers texture details that NLMeans discards at low SNR.
+    Reference: arXiv:2112.04021
     """
     img_f = img.astype(np.float64)
     I_F = nlmeans_denoise(img).astype(np.float64)
 
-    # Method noise: difference contains lost texture + residual noise
     MN = img_f - I_F
 
-    # Wavelet-threshold the method noise to recover clean texture detail
+    # shift MN to [0,255] range before wavelet processing, then re-centre
     D_hat = wavelet_denoise(
         np.clip(MN + 128, 0, 255).astype(np.uint8),
         wavelet=wavelet, level=level
     ).astype(np.float64) - 128.0
 
-    # Reconstruct: filtered image + recovered texture detail
     B = I_F + D_hat
     return np.clip(B, 0, 255).astype(np.uint8)
 
@@ -202,23 +130,24 @@ def histogram_equalization(img: np.ndarray) -> np.ndarray:
 
 def clahe(img: np.ndarray, clip_limit: float = 2.0,
           tile_grid: tuple = (8, 8)) -> np.ndarray:
-    """Contrast Limited Adaptive Histogram Equalization (CLAHE).
+    """
+    Contrast Limited Adaptive Histogram Equalization (CLAHE).
 
-    Preferred over global HE for textured surfaces: avoids over-amplifying
-    uniform regions while boosting local contrast in structured areas.
+    Preferred over global HE for textured surfaces: enhances local
+    contrast per tile without over-amplifying uniform regions.
     """
     c = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid)
     return c.apply(img)
 
 
-# ── Combined preprocessing ────────────────────────────────────────────────────
+# ── Combined pipeline ─────────────────────────────────────────────────────────
 
 def preprocess(img: np.ndarray,
                denoise: str = "gaussian",
                enhance: str = "clahe",
                **kwargs) -> np.ndarray:
     """
-    Apply a denoising step followed by a contrast enhancement step.
+    Apply denoising followed by contrast enhancement.
 
     Parameters
     ----------
@@ -227,7 +156,6 @@ def preprocess(img: np.ndarray,
               | 'rclbp' | None
     enhance : 'clahe' | 'histeq' | None
     """
-    # -- denoising
     if denoise == "gaussian":
         img = gaussian_denoise(img, **{k: v for k, v in kwargs.items()
                                        if k in ("ksize", "sigma")})
@@ -243,7 +171,6 @@ def preprocess(img: np.ndarray,
     elif denoise == "rclbp":
         img = rclbp_denoise(img)
 
-    # -- contrast enhancement
     if enhance == "clahe":
         img = clahe(img)
     elif enhance == "histeq":
@@ -254,10 +181,10 @@ def preprocess(img: np.ndarray,
 
 def preprocess_batch(images: np.ndarray, **kwargs) -> np.ndarray:
     """
-    Applica preprocess() a ogni immagine del batch in parallelo.
-    Usa thread perché OpenCV (gaussian, bilateral, CLAHE) rilascia il GIL.
-    Attenzione: nlmeans/rclbp usano già tutti i core internamente —
-    con quei metodi il guadagno è minore.
+    Apply preprocess() to every image in a batch, parallelised with threads.
+
+    Threads (not processes) work well here because OpenCV and NumPy release
+    the GIL during convolution and FFT operations.
     """
     from joblib import Parallel, delayed
     results = Parallel(n_jobs=-1, prefer="threads")(

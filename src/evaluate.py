@@ -141,7 +141,7 @@ def plot_pca_scatter(X_train: np.ndarray, X_test: np.ndarray,
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
 
-    # Fit solo su training (normali) per evitare data leakage
+    # Fit on training normals only to avoid data leakage in the projection
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
     X_test_s = scaler.transform(X_test)
